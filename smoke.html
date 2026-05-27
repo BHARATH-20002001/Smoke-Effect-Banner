@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hero Banner Section</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    /* Global Tokens & Dependencies */
+    :root {
+      --off-white: #f0efeb;
+      --black:     #111111;
+      --accent:    #e84020;
+      --white:     #ffffff;
+      --font: 'Space Grotesk', sans-serif;
+    }
+
+    /* Structural Reset Base for Hero Fit */
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--off-white);
+      font-family: var(--font);
+      overflow-x: hidden;
+    }
+
+    #hero {
+      min-height: 100dvh;
+      background: var(--off-white);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+
+    /* Full-bleed base canvas imagery context */
+    .hero-photo-wrap {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+    }
+    .hero-photo-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center top;
+      will-change: transform; /* Optimized for smooth vanilla scroll transitions */
+    }
+    /* Bottom vignette mask overlay */
+    .hero-photo-wrap::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        to top,
+        rgba(17,17,17,0.72) 0%,
+        rgba(17,17,17,0.18) 40%,
+        transparent 70%
+      );
+      pointer-events: none;
+    }
+
+    /* Fluid Shader interaction layout plane */
+    #hero-gl {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    /* Scroll Assist indicator markup styling */
+    .scroll-hint {
+      position: absolute;
+      bottom: 28px;
+      left: 50%;
+      z-index: 3;
+      transform: translateX(-50%);
+      animation: scrollBob 2.2s ease-in-out infinite 2s;
+    }
+
+    /* ===== ANIMATIONS ===== */
+    @keyframes scrollBob {
+      0%, 100% { transform: translateX(-50%) translateY(0); opacity: 0.4; }
+      50%      { transform: translateX(-50%) translateY(8px); opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+
+  <section id="hero">
+    <div class="hero-photo-wrap">
+      <img src="./smoke-src/mainimage-white.jpg" alt="Hero Background Image" id="hero-photo" />
+    </div>
+
+    <canvas id="hero-gl"></canvas>
+
+    <div class="scroll-hint">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+    </div>
+  </section>
+
+  <script>
+    // ===== VANILLA PARALLAX ENGINE (Replaces GSAP & ScrollTrigger) =====
+    (function() {
+      const hero = document.getElementById('hero');
+      const heroPhoto = document.getElementById('hero-photo');
+
+      if (hero && heroPhoto) {
+        let ticking = false;
+
+        function updateParallax() {
+          const scrollTop = window.scrollY;
+          const heroHeight = hero.offsetHeight;
+
+          // Calculate progress from 0 (top of hero) to 1 (bottom of hero exiting screen)
+          let progress = scrollTop / heroHeight;
+          progress = Math.max(0, Math.min(1, progress));
+
+          // Replicates GSAP's yPercent: 12 over the scroll track
+          heroPhoto.style.transform = `translateY(${progress * 12}%)`;
+          ticking = false;
+        }
+
+        window.addEventListener('scroll', () => {
+          if (!ticking) {
+            window.requestAnimationFrame(updateParallax);
+            ticking = true;
+          }
+        }, { passive: true });
+
+        // Initial setup run
+        updateParallax();
+      }
+    })();
+
+    // ===== WEBGL FLUID INTERACTION REVEAL COMPILER =====
+    (function () {
+      'use strict';
+      
+      function initFluid() {
+        const canvas = document.getElementById('hero-gl');
+        const heroEl = document.getElementById('hero');
+        if (!canvas || !heroEl) return;
+
+        canvas.width  = heroEl.clientWidth  || window.innerWidth;
+        canvas.height = heroEl.clientHeight || window.innerHeight;
+
+        const gl = canvas.getContext('webgl', { alpha: true, antialias: false, depth: false }) ||
+                   canvas.getContext('experimental-webgl', { alpha: true, antialias: false, depth: false });
+        if (!gl) return;
+
+        const SIM_W = 512;
+        const SIM_H = 512;
+        const LWIDTH = SIM_W * 0.20; 
+
+        const trailCanvas = document.createElement('canvas');
+        trailCanvas.width  = SIM_W;
+        trailCanvas.height = SIM_H;
+        const tc = trailCanvas.getContext('2d');
+
+        let trailX = -1, trailY = -1;  
+        let rawX   = -1, rawY   = -1;  
+        let hasPos = false;
+
+        const VS = `
+          attribute vec2 a_pos;
+          varying vec2 v_uv;
+          void main(){
+            v_uv = a_pos * 0.5 + 0.5;
+            gl_Position = vec4(a_pos, 0.0, 1.0);
+          }
+        `;
+
+        const SIM_FS = `
+          precision highp float;
+          varying vec2 v_uv;
+          uniform sampler2D u_prev;
+          uniform sampler2D u_trail;
+          uniform vec2 u_res;
+          uniform float u_time;
+
+          float hash(vec2 p){
+            p = fract(p * vec2(234.34,435.345));
+            p += dot(p, p + 34.23);
+            return fract(p.x * p.y);
+          }
+          float noise(vec2 p){
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f*f*(3.0-2.0*f);
+            return mix(
+              mix(hash(i),           hash(i+vec2(1.0,0.0)), f.x),
+              mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x),
+              f.y
+            );
+          }
+          float fbm(vec2 p){
+            float v=0.0; float a=0.5;
+            for(int i=0;i<4;i++){ v+=a*noise(p); p*=2.0; a*=0.5; }
+            return v;
+          }
+
+          void main(){
+            vec2 px = 1.0 / u_res;
+            float disp = fbm(v_uv * 3.5 + u_time * 0.12) * 2.0 - 1.0;
+            vec2 off = vec2(disp) * px * 4.5;
+
+            float c  = texture2D(u_prev, v_uv + off).r;
+            float cN = texture2D(u_prev, v_uv + vec2(0.0, px.y) + off).r;
+            float cS = texture2D(u_prev, v_uv - vec2(0.0, px.y) + off).r;
+            float cE = texture2D(u_prev, v_uv + vec2(px.x, 0.0) + off).r;
+            float cW = texture2D(u_prev, v_uv - vec2(px.x, 0.0) + off).r;
+
+            float blended = min(c, min(min(cN,cS), min(cE,cW)));
+            float ink = 1.0 - texture2D(u_trail, v_uv).r;
+            blended = min(blended, 1.0 - ink * 0.96);
+            blended += 0.0085;
+            gl_FragColor = vec4(vec3(clamp(blended,0.0,1.0)), 1.0);
+          }
+        `;
+
+        const COMP_FS = `
+          precision highp float;
+          varying vec2 v_uv;
+          uniform sampler2D u_base;
+          uniform sampler2D u_reveal;
+          uniform sampler2D u_fluid;
+          uniform vec2 u_baseSize;
+          uniform vec2 u_revealSize;
+          uniform vec2 u_canvas;
+
+          vec2 coverUV(vec2 uv, vec2 img, vec2 cvs){
+            float ia = img.x / img.y;
+            float ca = cvs.x / cvs.y;
+            vec2 s = (ia > ca) ? vec2(ca/ia, 1.0) : vec2(1.0, ia/ca);
+            vec2 fuv = vec2(uv.x, 1.0 - uv.y);
+            return (fuv - 0.5) * s + 0.5;
+          }
+
+          void main(){
+            vec2 baseUV   = coverUV(v_uv, u_baseSize, u_canvas);
+            vec2 revealUV = coverUV(v_uv, u_revealSize, u_canvas);
+            vec3 base = texture2D(u_base, baseUV).rgb;
+            vec3 rev  = texture2D(u_reveal, revealUV).rgb;
+            float lum = dot(rev, vec3(0.299, 0.587, 0.114));
+            lum = clamp((lum - 0.5) * 1.1 + 0.5, 0.0, 1.0);
+            rev = vec3(lum);
+
+            float mask = texture2D(u_fluid, v_uv).r;
+            vec3 color = mix(rev, base, mask);
+            float vf = max(0.0, 1.0 - v_uv.y / 0.65);
+            float va = vf * vf * 0.76;
+            color = mix(color, vec3(17.0/255.0), va);
+
+            gl_FragColor = vec4(color, 1.0);
+          }
+        `;
+
+        function compile(type, src){
+          const s = gl.createShader(type);
+          gl.shaderSource(s, src);
+          gl.compileShader(s);
+          if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+            gl.deleteShader(s); return null;
+          }
+          return s;
+        }
+        
+        function linkProg(vsSrc, fsSrc){
+          const vs = compile(gl.VERTEX_SHADER, vsSrc);
+          const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
+          if(!vs || !fs) return null;
+          const p = gl.createProgram();
+          gl.attachShader(p, vs);
+          gl.attachShader(p, fs);
+          gl.linkProgram(p);
+          return p;
+        }
+
+        const simProg  = linkProg(VS, SIM_FS);
+        const compProg = linkProg(VS, COMP_FS);
+        if(!simProg || !compProg) return;
+
+        const quadBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+
+        function bindQuad(prog){
+          const loc = gl.getAttribLocation(prog, 'a_pos');
+          gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+          gl.enableVertexAttribArray(loc);
+          gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+        }
+
+        function makeFBO(w, h){
+          const tex = gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          const fbo = gl.createFramebuffer();
+          gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+          return { tex, fbo };
+        }
+
+        let fboA = makeFBO(SIM_W, SIM_H);
+        let fboB = makeFBO(SIM_W, SIM_H);
+        
+        function clearFBO(fbo){
+          gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fbo);
+          gl.clearColor(1, 1, 1, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+        clearFBO(fboA);
+        clearFBO(fboB);
+
+        const trailTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, trailTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, SIM_W, SIM_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        function uploadTex(tex, img) {
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        }
+
+        function loadTex(src) {
+          return new Promise(resolve => {
+            const tex = gl.createTexture();
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => {
+              try { uploadTex(tex, img); resolve({ tex, w: img.naturalWidth, h: img.naturalHeight }); } 
+              catch(e) { resolve(null); }
+            };
+            img.onerror = () => resolve(null);
+            img.src = src;
+          });
+        }
+
+        heroEl.addEventListener('mousemove', e => {
+          const r = heroEl.getBoundingClientRect();
+          rawX = (e.clientX - r.left) / r.width;
+          rawY = (e.clientY - r.top)  / r.height;
+          hasPos = true;
+        });
+        
+        heroEl.addEventListener('mouseleave', () => {
+          hasPos = false; trailX = -1;
+        });
+
+        const simU = {
+          prev:  gl.getUniformLocation(simProg,  'u_prev'),
+          trail: gl.getUniformLocation(simProg,  'u_trail'),
+          res:   gl.getUniformLocation(simProg,  'u_res'),
+          time:  gl.getUniformLocation(simProg,  'u_time'),
+        };
+        const compU = {
+          base:       gl.getUniformLocation(compProg, 'u_base'),
+          reveal:     gl.getUniformLocation(compProg, 'u_reveal'),
+          fluid:      gl.getUniformLocation(compProg, 'u_fluid'),
+          baseSize:   gl.getUniformLocation(compProg, 'u_baseSize'),
+          revealSize: gl.getUniformLocation(compProg, 'u_revealSize'),
+          canvas:     gl.getUniformLocation(compProg, 'u_canvas'),
+        };
+
+        let t0 = null;
+
+        // ── Image Slider Sequence Setup ──
+        const seqPaths = [
+          './smoke-src/glass-me.jpg',
+          './smoke-src/glass-potrait.jpg',
+          './smoke-src/graduation.jpg',
+          './smoke-src/holdingstick.jpg',
+          './smoke-src/merunshirt.jpg',
+          './smoke-src/pinkshirt.jpg.jpg'
+        ];
+        let seqFrames = [];
+        seqPaths.forEach(p => loadTex(p).then(t => { if (t) seqFrames.push(t); }));
+
+        loadTex('./smoke-src/mainimage-white.jpg').then(base => {
+          if (!base) return;
+
+          if (seqFrames.length === 0) seqFrames.push(base);
+
+          let seqIdx      = 0;
+          let lastSeqTime = 0;
+          const SEQ_INTERVAL = 300; 
+
+          function frame(ts){
+            requestAnimationFrame(frame);
+            if(t0 === null) t0 = ts;
+            const t = (ts - t0) * 0.001;
+
+            if (ts - lastSeqTime >= SEQ_INTERVAL) {
+              seqIdx = (seqIdx + 1) % seqFrames.length;
+              lastSeqTime = ts;
+            }
+            const revealFrame = seqFrames[seqIdx] || base;
+
+            tc.fillStyle = '#ffffff';
+            tc.fillRect(0, 0, SIM_W, SIM_H);
+
+            if(hasPos){
+              const LERP = 0.14;
+              if(trailX < 0){ trailX = rawX; trailY = rawY; }
+              else {
+                trailX += (rawX - trailX) * LERP;
+                trailY += (rawY - trailY) * LERP;
+              }
+              const sx = trailX * SIM_W,  sy = (1.0 - trailY) * SIM_H;
+              const rx = rawX   * SIM_W,  ry = (1.0 - rawY)   * SIM_H;
+
+              tc.strokeStyle = '#000000';
+              tc.lineWidth   = LWIDTH;
+              tc.lineCap     = 'round';
+              tc.lineJoin    = 'round';
+              tc.beginPath();
+              tc.moveTo(sx, sy);
+              tc.lineTo(rx, ry);
+              tc.stroke();
+
+              tc.fillStyle = '#000000';
+              tc.beginPath();
+              tc.arc(rx, ry, LWIDTH * 0.55, 0, Math.PI * 2);
+              tc.fill();
+            }
+
+            gl.bindTexture(gl.TEXTURE_2D, trailTex);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, trailCanvas);
+
+            gl.useProgram(simProg);
+            bindQuad(simProg);
+            gl.viewport(0, 0, SIM_W, SIM_H);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fboB.fbo);
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, fboA.tex);
+            gl.uniform1i(simU.prev, 0);
+
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, trailTex);
+            gl.uniform1i(simU.trail, 1);
+
+            gl.uniform2f(simU.res,  SIM_W, SIM_H);
+            gl.uniform1f(simU.time, t);
+
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            const tmp = fboA; fboA = fboB; fboB = tmp;
+
+            gl.useProgram(compProg);
+            bindQuad(compProg);
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, base.tex);
+            gl.uniform1i(compU.base, 0);
+
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, revealFrame.tex); 
+            gl.uniform1i(compU.reveal, 1);
+
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, fboA.tex);
+            gl.uniform1i(compU.fluid, 2);
+
+            gl.uniform2f(compU.baseSize,   base.w, base.h);
+            gl.uniform2f(compU.revealSize, revealFrame.w, revealFrame.h);
+            gl.uniform2f(compU.canvas, canvas.width, canvas.height);
+
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          }
+          requestAnimationFrame(frame);
+        });
+      }
+
+      if (document.readyState === 'complete') initFluid();
+      else window.addEventListener('load', initFluid);
+    })();
+  </script>
+</body>
+</html>
